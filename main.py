@@ -5,24 +5,24 @@ import os
 import google.generativeai as genai
 
 # =========================
-# CONFIG
+# CONFIG (Using Secret)
 # =========================
 
-# Google AI Studio ကရတဲ့ API Key ကို ဒီမှာထည့်ပါ
-GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY"
-genai.configure(api_key=GOOGLE_API_KEY)
+# Secret Name ကို 'GEMINI_API_KEY' လို့ ပေးထားပေးပါ
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini 1.5 Flash က မြန်ဆန်ပြီး Free Tier အတွက် အဆင်ပြေပါတယ်
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-TECH_TERMS = ["Python", "API", "Machine Learning", "AI", "Deep Learning", "JavaScript", "HTML", "CSS"]
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    print("Warning: GEMINI_API_KEY not found in environment variables.")
 
 # =========================
-# YOUTUBE DOWNLOAD
+# FUNCTIONS
 # =========================
 
 def download_video(url):
-    print("Downloading video...")
+    print("Downloading video from YouTube...")
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
         'outtmpl': 'input_video.mp4'
@@ -31,56 +31,24 @@ def download_video(url):
         ydl.download([url])
     return "input_video.mp4"
 
-# =========================
-# AUDIO EXTRACT
-# =========================
-
 def extract_audio(video):
     print("Extracting audio...")
     audio = "audio.mp3"
-    command = ["ffmpeg", "-i", video, "-q:a", "0", "-map", "a", audio, "-y"]
-    subprocess.run(command)
+    # FFmpeg သုံးပြီး အသံထုတ်ယူခြင်း
+    subprocess.run(["ffmpeg", "-i", video, "-q:a", "0", "-map", "a", audio, "-y"])
     return audio
 
-# =========================
-# WHISPER TRANSCRIBE
-# =========================
-
-def transcribe(audio):
-    print("Loading Whisper model (base)...")
-    whisper_model = whisper.load_model("base")
-    result = whisper_model.transcribe(audio)
-    return result["segments"]
-
-# =========================
-# GEMINI TRANSLATION
-# =========================
-
-def translate_text(text):
-    # Technical terms တွေကို ကွင်းစကွင်းပိတ်နဲ့ ခဏခွဲထားမယ်
-    for term in TECH_TERMS:
-        text = text.replace(term, f"[{term}]")
-
-    prompt = f"""
-    You are a professional English to Myanmar translator. 
-    Translate the following sentence into natural-sounding, conversational Myanmar language.
-    Keep technical terms inside brackets like [AI] or [API] in English.
-    
-    Sentence: {text}
-    """
-    
+def translate_to_myanmar(text):
+    if not GOOGLE_API_KEY:
+        return "Translation Error (No API Key)"
+        
+    prompt = f"Translate the following English sentence into natural, conversational Myanmar: '{text}'. Output only the Myanmar text."
     try:
         response = model.generate_content(prompt)
-        mm_text = response.text.strip()
-        # ကွင်းစကွင်းပိတ်တွေ ပြန်ဖြုတ်မယ်
-        return mm_text.replace("[", "").replace("]", "")
+        return response.text.strip()
     except Exception as e:
         print(f"Translation error: {e}")
-        return text
-
-# =========================
-# SRT GENERATION & EMBED
-# =========================
+        return ""
 
 def format_time(seconds):
     h = int(seconds // 3600)
@@ -88,48 +56,56 @@ def format_time(seconds):
     s = seconds % 60
     return f"{h:02}:{m:02}:{s:06.3f}".replace('.', ',')
 
-def generate_srt(segments):
-    print("Translating and generating SRT...")
+# =========================
+# DUAL SUBTITLE GENERATION
+# =========================
+
+def generate_dual_srt(segments):
+    print("Translating and generating Dual Subtitles (EN+MM)...")
     srt_content = ""
     for i, seg in enumerate(segments, 1):
         start = format_time(seg['start'])
         end = format_time(seg['end'])
-        mm_text = translate_text(seg['text'])
-        srt_content += f"{i}\n{start} --> {end}\n{mm_text}\n\n"
-    
-    with open("subtitle.srt", "w", encoding="utf-8") as f:
-        f.write(srt_content)
+        en_text = seg['text'].strip()
+        
+        # English ကို Gemini နဲ့ မြန်မာပြန်ခြင်း
+        mm_text = translate_to_myanmar(en_text)
+        
+        # SRT Format: အပေါ်က English၊ အောက်က မြန်မာ
+        srt_content += f"{i}\n{start} --> {end}\n{en_text}\n{mm_text}\n\n"
 
-def embed_subtitle(video):
-    print("Embedding subtitles into video...")
-    output = "final_output_mm.mp4"
-    # FFmpeg သုံးပြီး Hardcode subtitle ထိုးခြင်း
-    command = [
-        "ffmpeg", "-i", video,
-        "-vf", "subtitles=subtitle.srt",
-        output, "-y"
-    ]
-    subprocess.run(command)
-    return output
+    with open("dual_subtitles.srt", "w", encoding="utf-8") as f:
+        f.write(srt_content)
+    return "dual_subtitles.srt"
 
 # =========================
 # MAIN PROCESS
 # =========================
 
 def main():
-    url = input("Paste YouTube URL: ")
-    
+    url = input("YouTube Video URL ကို ထည့်ပါ: ")
+    if not url:
+        print("URL မရှိပါ။")
+        return
+
     try:
-        video = download_video(url)
-        audio = extract_audio(video)
-        segments = transcribe(audio)
-        generate_srt(segments)
-        final_video = embed_subtitle(video)
+        video_file = download_video(url)
+        audio_file = extract_audio(video_file)
         
-        print("\n--- DONE! ---")
-        print(f"Your subtitled video is ready: {final_video}")
+        print("Transcribing with Whisper (Loading model...)...")
+        # Whisper model အသေး (base) ကို သုံးထားပါတယ် (မြန်ဆန်ဖို့အတွက်)
+        whisper_model = whisper.load_model("base")
+        result = whisper_model.transcribe(audio_file)
+        
+        srt_file = generate_dual_srt(result["segments"])
+        
+        print("\n" + "="*20)
+        print(f"အောင်မြင်စွာ ပြီးဆုံးပါပြီ!")
+        print(f"Subtitle ဖိုင်အမည်: {srt_file}")
+        print("="*20)
+        
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error တစ်ခု ဖြစ်ပွားခဲ့သည်: {e}")
 
 if __name__ == "__main__":
     main()
